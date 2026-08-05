@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 PLATE_HALF = 0.833   # half plate width + ball radius, ft
 SHADOW_ZONE = 0.242  # Statcast official: one ball-width (2.9 in) beyond zone edge
 
-DB_PATH = os.environ.get("FFDB_PATH", "./baseball.duckdb")
+DB_PATH = os.environ.get("FFDB_PATH", "./baseball_live.duckdb")
 STATUS_PATH = os.environ.get("FFDB_STATUS_PATH", "./refresh_status.json")
 
 
