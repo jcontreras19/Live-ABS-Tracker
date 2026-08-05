@@ -40,7 +40,7 @@ jobs:
           cat > .env << 'EOF'
           RAW_DATA_DIR=./data/raw
           PROCESSED_DATA_DIR=./data/processed
-          DUCKDB_PATH=./baseball_live.duckdb
+          DUCKDB_PATH=./baseball_working.duckdb
           EOF
 
       - name: Ensure data directories exist
