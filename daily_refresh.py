@@ -55,17 +55,26 @@ def save_status(status):
 
 def get_row_counts():
     """Quick sanity-check query: pitch counts per season.
-    Used before/after refresh to catch a refresh that silently lost data."""
+    Used before/after refresh to catch a refresh that silently lost data.
+    On a fresh checkout (e.g. a new GitHub Actions runner), the committed
+    .duckdb file's views point to relative Parquet paths that don't exist
+    until `ffdb refresh` rebuilds them locally -- so a failure here before
+    the refresh step is expected and should be treated as "no prior data",
+    not a fatal error."""
     import duckdb
-    conn = duckdb.connect(DB_PATH, read_only=True)
-    result = conn.execute("""
-        SELECT g.season, COUNT(*) as n
-        FROM events e JOIN games g ON g.game_id = e.game_id
-        WHERE g.game_type = 'R' AND e.is_pitch = true
-        GROUP BY g.season ORDER BY g.season
-    """).fetchall()
-    conn.close()
-    return {int(season): int(n) for season, n in result}
+    try:
+        conn = duckdb.connect(DB_PATH, read_only=True)
+        result = conn.execute("""
+            SELECT g.season, COUNT(*) as n
+            FROM events e JOIN games g ON g.game_id = e.game_id
+            WHERE g.game_type = 'R' AND e.is_pitch = true
+            GROUP BY g.season ORDER BY g.season
+        """).fetchall()
+        conn.close()
+        return {int(season): int(n) for season, n in result}
+    except Exception as e:
+        log(f"Could not read row counts from {DB_PATH} ({e}) -- treating as no prior data")
+        return {}
 
 
 def backup_database():
