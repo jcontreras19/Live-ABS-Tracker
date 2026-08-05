@@ -139,6 +139,32 @@ def materialize_views():
     log("Materialization complete -- database is now self-contained.")
 
 
+def prune_to_current_season():
+    """Keep only the current season's data. A live tracker doesn't need
+    multi-year history, and keeping it all pushed the committed file past
+    GitHub's 100MB blob size limit."""
+    import duckdb
+    conn = duckdb.connect(DB_PATH, read_only=False)
+    current_season = conn.execute("SELECT MAX(season) FROM games").fetchone()[0]
+    log(f"Pruning database to season {current_season} only...")
+
+    tables_with_game_id = conn.execute("""
+        SELECT table_name FROM information_schema.columns
+        WHERE column_name = 'game_id' AND table_schema = 'main'
+    """).fetchall()
+    keep_ids = f"(SELECT game_id FROM games WHERE season = {current_season})"
+    for (t,) in tables_with_game_id:
+        if t == "games":
+            continue
+        conn.execute(f'DELETE FROM "{t}" WHERE game_id NOT IN {keep_ids}')
+    conn.execute(f"DELETE FROM games WHERE season != {current_season}")
+    conn.execute("CHECKPOINT")
+    conn.close()
+
+    size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
+    log(f"Pruning complete. Database size: {size_mb:.1f} MB")
+
+
 def run_ffdb_refresh():
     """Call the ffdb CLI refresh command."""
     log("Running `ffdb refresh`...")
@@ -158,13 +184,18 @@ def run_ffdb_refresh():
 
 
 def health_check(before_counts, after_counts):
-    """A refresh should only ever ADD rows, never remove them, for past seasons.
-    The current season's count should also not decrease.
+    """The database is pruned to the current season every run, so older
+    seasons legitimately disappearing between before/after is expected, not
+    a failure. What we actually want to catch: the CURRENT season's row
+    count dropping (a sign the refresh silently lost data), or an
+    implausibly small database overall.
     Returns (passed: bool, reason: str)."""
-    for season, before_n in before_counts.items():
-        after_n = after_counts.get(season, 0)
+    if after_counts:
+        current_season = max(after_counts.keys())
+        before_n = before_counts.get(current_season, 0)
+        after_n = after_counts.get(current_season, 0)
         if after_n < before_n:
-            return False, f"Season {season} row count DROPPED ({before_n} -> {after_n})"
+            return False, f"Current season {current_season} row count DROPPED ({before_n} -> {after_n})"
 
     # sanity floor: total row count should never be near-zero after a real refresh
     if sum(after_counts.values()) < 1000:
@@ -199,6 +230,7 @@ def main():
             raise RuntimeError("ffdb refresh command failed (non-zero exit code)")
 
         materialize_views()
+        prune_to_current_season()
 
         after_counts = get_row_counts()
         log(f"Row counts after refresh: {after_counts}")

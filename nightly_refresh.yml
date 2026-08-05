@@ -1,0 +1,81 @@
+name: Nightly FFDB Refresh
+
+# Runs the ABS shadow-zone database refresh in the cloud, on a schedule,
+# and commits the updated database back to the repo only if the refresh
+# passes its health check. Git history IS the backup log here — a bad
+# night simply never gets committed, so main always reflects the last
+# known-good database. Streamlit Community Cloud auto-redeploys on push.
+
+on:
+  schedule:
+    # 13:00 UTC ≈ 9:00 AM Eastern — well after the prior night's games finish
+    - cron: '0 13 * * *'
+  workflow_dispatch: {}   # lets you trigger a manual run from the Actions tab
+
+permissions:
+  contents: write   # needed to commit the refreshed database back to the repo
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install aiofiles aiohttp "duckdb>=1.0.0" pandas pyarrow python-dotenv requests tqdm typer
+
+      - name: Create .env for FFDB
+        run: |
+          cat > .env << 'EOF'
+          RAW_DATA_DIR=./data/raw
+          PROCESSED_DATA_DIR=./data/processed
+          DUCKDB_PATH=./baseball_live.duckdb
+          EOF
+
+      - name: Ensure data directories exist
+        run: mkdir -p data/raw data/processed
+
+      - name: Run nightly refresh (backup + refresh + health check)
+        id: refresh
+        env:
+          FFDB_DIR: ${{ github.workspace }}
+        run: python daily_refresh.py
+
+      - name: Show refresh status
+        if: always()
+        run: cat refresh_status.json || echo "No status file produced"
+
+      - name: Clean up raw JSON before committing
+        if: success()
+        run: |
+          # Raw JSON is large and not worth versioning — only the processed
+          # database needs to persist between runs.
+          rm -rf data/raw
+
+      - name: Commit refreshed database
+        if: success()
+        run: |
+          git config user.name "ffdb-nightly-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add baseball_live.duckdb refresh_status.json
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "Nightly refresh: $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push
+
+      - name: Upload log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refresh-log-${{ github.run_number }}
+          path: refresh_status.json
+          retention-days: 30
