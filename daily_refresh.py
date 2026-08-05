@@ -115,6 +115,30 @@ def restore_backup(backup_path):
     return False
 
 
+def materialize_views():
+    """Convert views (pointing at external Parquet) into physical tables, so
+    the committed .duckdb file is fully self-contained and works when deployed
+    anywhere -- not just in an environment with the matching data/processed/
+    Parquet files sitting alongside it."""
+    import duckdb
+    conn = duckdb.connect(DB_PATH, read_only=False)
+    views = conn.execute("""
+        SELECT schema_name, view_name FROM duckdb_views() WHERE NOT internal
+    """).fetchall()
+    if not views:
+        conn.close()
+        return
+    log(f"Materializing {len(views)} views into physical tables...")
+    for schema, view in views:
+        qualified = f'"{schema}"."{view}"' if schema != "main" else f'"{view}"'
+        tmp_qualified = f'"{schema}"."__tmp_{view}"' if schema != "main" else f'"__tmp_{view}"'
+        conn.execute(f"CREATE TABLE {tmp_qualified} AS SELECT * FROM {qualified}")
+        conn.execute(f"DROP VIEW {qualified}")
+        conn.execute(f'ALTER TABLE {tmp_qualified} RENAME TO "{view}"')
+    conn.close()
+    log("Materialization complete -- database is now self-contained.")
+
+
 def run_ffdb_refresh():
     """Call the ffdb CLI refresh command."""
     log("Running `ffdb refresh`...")
@@ -173,6 +197,8 @@ def main():
         refresh_ok = run_ffdb_refresh()
         if not refresh_ok:
             raise RuntimeError("ffdb refresh command failed (non-zero exit code)")
+
+        materialize_views()
 
         after_counts = get_row_counts()
         log(f"Row counts after refresh: {after_counts}")
