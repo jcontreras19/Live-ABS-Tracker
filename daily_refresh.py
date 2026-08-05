@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 FFDB_DIR = os.environ.get("FFDB_DIR", os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(FFDB_DIR, "baseball.duckdb")
+DB_PATH = os.path.join(FFDB_DIR, "baseball_live.duckdb")
 BACKUP_DIR = os.environ.get("FFDB_BACKUP_DIR", os.path.join(FFDB_DIR, "backups"))
 KEEP_BACKUPS = int(os.environ.get("FFDB_KEEP_BACKUPS", "14"))
 STATUS_PATH = os.path.join(FFDB_DIR, "refresh_status.json")
