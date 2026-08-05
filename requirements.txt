@@ -1,0 +1,6 @@
+streamlit>=1.30.0
+duckdb>=1.0.0
+pandas
+numpy
+matplotlib
+plotly>=5.18.0
