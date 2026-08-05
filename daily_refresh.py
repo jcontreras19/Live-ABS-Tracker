@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 # ── Configuration ──────────────────────────────────────────────────────────────
 FFDB_DIR = os.environ.get("FFDB_DIR", os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(FFDB_DIR, "baseball_live.duckdb")
+WORKING_DB_PATH = os.path.join(FFDB_DIR, "baseball_working.duckdb")
 BACKUP_DIR = os.environ.get("FFDB_BACKUP_DIR", os.path.join(FFDB_DIR, "backups"))
 KEEP_BACKUPS = int(os.environ.get("FFDB_KEEP_BACKUPS", "14"))
 STATUS_PATH = os.path.join(FFDB_DIR, "refresh_status.json")
@@ -115,54 +116,51 @@ def restore_backup(backup_path):
     return False
 
 
-def materialize_views():
-    """Convert views (pointing at external Parquet) into physical tables, so
-    the committed .duckdb file is fully self-contained and works when deployed
-    anywhere -- not just in an environment with the matching data/processed/
-    Parquet files sitting alongside it."""
+def build_slim_database():
+    """Rebuild the committed database (DB_PATH) from scratch, containing ONLY
+    what the app queries: a handful of `events` columns, regular-season
+    `games`, and the small `ref.players` / `ref.teams` lookup tables.
+
+    Why this exists: an earlier version of this pipeline materialized every
+    view and pruned by season, but that still left a ~650MB file --
+    `events` has ~90 columns (the app uses ~15) and there are 8 large
+    per-play tables (play_credits, runners, plays, player_logs, etc.) the
+    app never touches at all. Building a targeted slim copy instead gets
+    the committed file down to ~15MB. Reads from WORKING_DB_PATH (the raw
+    output of `ffdb refresh`, view-based, not committed) and writes the
+    slim result to DB_PATH (what actually gets committed)."""
     import duckdb
-    conn = duckdb.connect(DB_PATH, read_only=False)
-    views = conn.execute("""
-        SELECT schema_name, view_name FROM duckdb_views() WHERE NOT internal
-    """).fetchall()
-    if not views:
-        conn.close()
-        return
-    log(f"Materializing {len(views)} views into physical tables...")
-    for schema, view in views:
-        qualified = f'"{schema}"."{view}"' if schema != "main" else f'"{view}"'
-        tmp_qualified = f'"{schema}"."__tmp_{view}"' if schema != "main" else f'"__tmp_{view}"'
-        conn.execute(f"CREATE TABLE {tmp_qualified} AS SELECT * FROM {qualified}")
-        conn.execute(f"DROP VIEW {qualified}")
-        conn.execute(f'ALTER TABLE {tmp_qualified} RENAME TO "{view}"')
-    conn.close()
-    log("Materialization complete -- database is now self-contained.")
+    if os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
 
+    conn = duckdb.connect(DB_PATH)
+    conn.execute(f"ATTACH '{WORKING_DB_PATH}' AS src (READ_ONLY)")
 
-def prune_to_current_season():
-    """Keep only the current season's data. A live tracker doesn't need
-    multi-year history, and keeping it all pushed the committed file past
-    GitHub's 100MB blob size limit."""
-    import duckdb
-    conn = duckdb.connect(DB_PATH, read_only=False)
-    current_season = conn.execute("SELECT MAX(season) FROM games").fetchone()[0]
-    log(f"Pruning database to season {current_season} only...")
+    conn.execute("""
+        CREATE TABLE games AS
+        SELECT * FROM src.games WHERE game_type = 'R'
+    """)
 
-    tables_with_game_id = conn.execute("""
-        SELECT table_name FROM information_schema.columns
-        WHERE column_name = 'game_id' AND table_schema = 'main'
-    """).fetchall()
-    keep_ids = f"(SELECT game_id FROM games WHERE season = {current_season})"
-    for (t,) in tables_with_game_id:
-        if t == "games":
-            continue
-        conn.execute(f'DELETE FROM "{t}" WHERE game_id NOT IN {keep_ids}')
-    conn.execute(f"DELETE FROM games WHERE season != {current_season}")
+    conn.execute("""
+        CREATE TABLE events AS
+        SELECT
+            game_id, p_x, p_z, strike_zone_top, strike_zone_bottom, code,
+            pre_balls, pre_strikes, bat_side, pitch_hand, pitch_type,
+            has_review, is_overturned, is_pitch, batter, pitcher
+        FROM src.events
+        WHERE game_id IN (SELECT game_id FROM games)
+    """)
+
+    conn.execute("CREATE SCHEMA ref")
+    conn.execute("CREATE TABLE ref.players AS SELECT id, full_name FROM src.ref.players")
+    conn.execute("CREATE TABLE ref.teams AS SELECT id, name FROM src.ref.teams")
+
+    conn.execute("DETACH src")
     conn.execute("CHECKPOINT")
     conn.close()
 
     size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
-    log(f"Pruning complete. Database size: {size_mb:.1f} MB")
+    log(f"Slim database built. Size: {size_mb:.1f} MB")
 
 
 def run_ffdb_refresh():
@@ -229,8 +227,7 @@ def main():
         if not refresh_ok:
             raise RuntimeError("ffdb refresh command failed (non-zero exit code)")
 
-        materialize_views()
-        prune_to_current_season()
+        build_slim_database()
 
         after_counts = get_row_counts()
         log(f"Row counts after refresh: {after_counts}")
