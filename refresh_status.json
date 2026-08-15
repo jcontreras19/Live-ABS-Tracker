@@ -1,8 +1,8 @@
 {
-  "last_refresh_time": "2026-08-14T14:13:07.571343",
+  "last_refresh_time": "2026-08-15T13:27:16.772135",
   "last_success": true,
   "seasons": {
-    "2026": 536355
+    "2026": 540414
   },
   "history": [
     {
@@ -62,6 +62,11 @@
     },
     {
       "timestamp": "2026-08-14T14:09:56.066349",
+      "success": true,
+      "reason": "OK"
+    },
+    {
+      "timestamp": "2026-08-15T13:23:54.884701",
       "success": true,
       "reason": "OK"
     }
